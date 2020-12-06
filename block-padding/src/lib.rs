@@ -26,7 +26,9 @@ pub trait Padding<BlockSize: ArrayLength<u8>> {
     /// Pads `block` filled with data up to `pos` (i.e length of a message
     /// stored in the block is equal to `pos`).
     ///
-    /// If `pos` is bigger or equal to `BlockSize`, method does nothing.
+    /// # Panics
+    /// If `pos` is bigger than `BlockSize`. Most paddin algorithms also
+    /// panic if they are equal.
     fn pad(block: &mut Block<BlockSize>, pos: usize);
 
     /// Unpad data in the `block`.
@@ -59,8 +61,8 @@ pub struct ZeroPadding;
 impl<B: ArrayLength<u8>> Padding<B> for ZeroPadding {
     #[inline]
     fn pad(block: &mut Block<B>, pos: usize) {
-        if pos >= B::USIZE {
-            return;
+        if pos > B::USIZE {
+            panic!("`pos` is bigger than block size");
         }
         for b in &mut block[pos..] {
             *b = 0;
@@ -106,7 +108,7 @@ impl<B: ArrayLength<u8>> Padding<B> for Pkcs7 {
             panic!("block size is too big for PKCS#7");
         }
         if pos >= B::USIZE {
-            return;
+            panic!("`pos` is bigger or equal to block size");
         }
         let n = (B::USIZE - pos) as u8;
         for b in &mut block[pos..] {
@@ -160,7 +162,7 @@ impl<B: ArrayLength<u8>> Padding<B> for AnsiX923 {
             panic!("block size is too big for PKCS#7");
         }
         if pos >= B::USIZE {
-            return;
+            panic!("`pos` is bigger or equal to block size");
         }
         let bs = B::USIZE;
         for b in &mut block[pos..bs - 1] {
@@ -210,7 +212,7 @@ impl<B: ArrayLength<u8>> Padding<B> for Iso7816 {
     #[inline]
     fn pad(block: &mut Block<B>, pos: usize) {
         if pos >= B::USIZE {
-            return;
+            panic!("`pos` is bigger or equal to block size");
         }
         block[pos] = 0x80;
         for b in &mut block[pos + 1..] {
@@ -257,7 +259,11 @@ pub enum NoPadding {}
 
 impl<B: ArrayLength<u8>> Padding<B> for NoPadding {
     #[inline]
-    fn pad(_block: &mut Block<B>, _pos: usize) {}
+    fn pad(_block: &mut Block<B>, pos: usize) {
+        if pos > B::USIZE {
+            panic!("`pos` is bigger than block size");
+        }
+    }
 
     #[inline]
     fn unpad(block: &Block<B>) -> Result<&[u8], UnpadError> {
