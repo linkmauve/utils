@@ -152,7 +152,7 @@ impl<B: ArrayLength<u8>> Padding<B> for Pkcs7 {
 /// assert_eq!(res, msg);
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub enum AnsiX923 {}
+pub struct AnsiX923;
 
 impl<B: ArrayLength<u8>> Padding<B> for AnsiX923 {
     #[inline]
@@ -206,7 +206,7 @@ impl<B: ArrayLength<u8>> Padding<B> for AnsiX923 {
 /// assert_eq!(res, msg);
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub enum Iso7816 {}
+pub struct Iso7816;
 
 impl<B: ArrayLength<u8>> Padding<B> for Iso7816 {
     #[inline]
@@ -255,7 +255,7 @@ impl<B: ArrayLength<u8>> Padding<B> for Iso7816 {
 /// Thus `NoPadding` generally should not be used with data length of which
 /// is not multiple of block size.
 #[derive(Clone, Copy, Debug)]
-pub enum NoPadding {}
+pub struct NoPadding;
 
 impl<B: ArrayLength<u8>> Padding<B> for NoPadding {
     #[inline]
