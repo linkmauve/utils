@@ -1,10 +1,17 @@
+//! Fixed size buffer for block processing of data.
 #![no_std]
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg"
+)]
+#![warn(missing_docs, rust_2018_idioms)]
+
 #[cfg(feature = "block-padding")]
 pub use block_padding;
 pub use generic_array;
 
 #[cfg(feature = "block-padding")]
-use block_padding::{PadError, Padding};
+use block_padding::Padding;
 use core::{convert::TryInto, slice};
 use generic_array::{ArrayLength, GenericArray};
 
@@ -23,17 +30,19 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         mut input: &[u8],
         mut f: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
+        let pos = self.get_pos();
         let r = self.remaining();
-        if input.len() < r {
-            let n = input.len();
-            self.buffer[self.pos..self.pos + n].copy_from_slice(input);
-            self.pos += n;
+        let n = input.len();
+        if n < r {
+            // double slicing allows to remove panic branches
+            self.buffer[pos..][..n].copy_from_slice(input);
+            self.set_pos(pos + n);
             return;
         }
-        if self.pos != 0 && input.len() >= r {
+        if pos != 0 && input.len() >= r {
             let (l, r) = input.split_at(r);
             input = r;
-            self.buffer[self.pos..].copy_from_slice(l);
+            self.buffer[pos..].copy_from_slice(l);
             f(&self.buffer);
         }
 
@@ -45,7 +54,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
         // Copy any remaining data into the buffer.
         self.buffer[..rem.len()].copy_from_slice(rem);
-        self.pos = rem.len();
+        self.set_pos(rem.len());
     }
 
     /// Process data in `input` in blocks of size `BlockSize` using function `f`, which accepts
@@ -56,18 +65,19 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         mut input: &[u8],
         mut f: impl FnMut(&[GenericArray<u8, BlockSize>]),
     ) {
+        let pos = self.get_pos();
         let r = self.remaining();
-        if input.len() < r {
-            let n = input.len();
-            self.buffer[self.pos..self.pos + n].copy_from_slice(input);
-            self.pos += n;
+        let n = input.len();
+        if n < r {
+            // double slicing allows to remove panic branches
+            self.buffer[pos..][..n].copy_from_slice(input);
+            self.set_pos(pos + n);
             return;
         }
-        if self.pos != 0 && input.len() >= r {
+        if pos != 0 && input.len() >= r {
             let (l, r) = input.split_at(r);
             input = r;
-            self.buffer[self.pos..].copy_from_slice(l);
-            self.pos = 0;
+            self.buffer[pos..].copy_from_slice(l);
             f(slice::from_ref(&self.buffer));
         }
 
@@ -87,61 +97,31 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         // Copy remaining data into the buffer.
         let n = right.len();
         self.buffer[..n].copy_from_slice(right);
-        self.pos = n;
-    }
-
-    /// Variant that doesn't flush the buffer until there's additional
-    /// data to be processed. Suitable for tweakable block ciphers
-    /// like Threefish that need to know whether a block is the *last*
-    /// data block before processing it.
-    #[inline]
-    pub fn input_lazy(
-        &mut self,
-        mut input: &[u8],
-        mut f: impl FnMut(&GenericArray<u8, BlockSize>),
-    ) {
-        let r = self.remaining();
-        if input.len() <= r {
-            let n = input.len();
-            self.buffer[self.pos..self.pos + n].copy_from_slice(input);
-            self.pos += n;
-            return;
-        }
-        if self.pos != 0 && input.len() > r {
-            let (l, r) = input.split_at(r);
-            input = r;
-            self.buffer[self.pos..].copy_from_slice(l);
-            f(&self.buffer);
-        }
-
-        while input.len() > self.size() {
-            let (block, r) = input.split_at(self.size());
-            input = r;
-            f(block.try_into().unwrap());
-        }
-
-        self.buffer[..input.len()].copy_from_slice(input);
-        self.pos = input.len();
+        self.set_pos(n);
     }
 
     /// Pad buffer with `prefix` and make sure that internall buffer
     /// has at least `up_to` free bytes. All remaining bytes get
     /// zeroed-out.
-    #[inline]
-    fn digest_pad(&mut self, up_to: usize, mut f: impl FnMut(&GenericArray<u8, BlockSize>)) {
-        if self.pos == self.size() {
-            f(&self.buffer);
-            self.pos = 0;
+    #[inline(always)]
+    fn digest_pad(&mut self, sfx: &[u8], mut f: impl FnMut(&GenericArray<u8, BlockSize>)) {
+        let pos = self.get_pos();
+        self.buffer[pos] = 0x80;
+        for b in &mut self.buffer[pos + 1..] {
+            *b = 0;
         }
-        self.buffer[self.pos] = 0x80;
-        self.pos += 1;
 
-        set_zero(&mut self.buffer[self.pos..]);
-
-        if self.remaining() < up_to {
+        let n = self.size() - sfx.len();
+        if self.size() - pos - 1 < sfx.len() {
             f(&self.buffer);
-            set_zero(&mut self.buffer[..self.pos]);
+            let mut block: GenericArray<u8, BlockSize> = Default::default();
+            block[n..].copy_from_slice(sfx);
+            f(&block);
+        } else {
+            self.buffer[n..].copy_from_slice(sfx);
+            f(&self.buffer);
         }
+        self.set_pos(0)
     }
 
     /// Pad message with 0x80, zeros and 64-bit message length
@@ -150,14 +130,9 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     pub fn len64_padding_be(
         &mut self,
         data_len: u64,
-        mut f: impl FnMut(&GenericArray<u8, BlockSize>),
+        f: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
-        self.digest_pad(8, &mut f);
-        let b = data_len.to_be_bytes();
-        let n = self.buffer.len() - b.len();
-        self.buffer[n..].copy_from_slice(&b);
-        f(&self.buffer);
-        self.pos = 0;
+        self.digest_pad(&data_len.to_be_bytes(), f);
     }
 
     /// Pad message with 0x80, zeros and 64-bit message length
@@ -166,14 +141,9 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     pub fn len64_padding_le(
         &mut self,
         data_len: u64,
-        mut f: impl FnMut(&GenericArray<u8, BlockSize>),
+        f: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
-        self.digest_pad(8, &mut f);
-        let b = data_len.to_le_bytes();
-        let n = self.buffer.len() - b.len();
-        self.buffer[n..].copy_from_slice(&b);
-        f(&self.buffer);
-        self.pos = 0;
+        self.digest_pad(&data_len.to_le_bytes(), f);
     }
 
     /// Pad message with 0x80, zeros and 128-bit message length
@@ -182,60 +152,54 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     pub fn len128_padding_be(
         &mut self,
         data_len: u128,
-        mut f: impl FnMut(&GenericArray<u8, BlockSize>),
+        f: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
-        self.digest_pad(16, &mut f);
-        let b = data_len.to_be_bytes();
-        let n = self.buffer.len() - b.len();
-        self.buffer[n..].copy_from_slice(&b);
-        f(&self.buffer);
-        self.pos = 0;
+        self.digest_pad(&data_len.to_be_bytes(), f);
     }
 
-    /// Pad message with a given padding `P`
-    ///
-    /// Returns `PadError` if internall buffer is full, which can only happen if
-    /// `input_lazy` was used.
+    /// Pad message with a given padding `P`.
     #[cfg(feature = "block-padding")]
     #[inline]
-    pub fn pad_with<P: Padding>(&mut self) -> Result<&mut GenericArray<u8, BlockSize>, PadError> {
-        P::pad_block(&mut self.buffer[..], self.pos)?;
-        self.pos = 0;
-        Ok(&mut self.buffer)
+    pub fn pad_with<P: Padding<BlockSize>>(&mut self) -> &mut GenericArray<u8, BlockSize>{
+        let pos = self.get_pos();
+        P::pad(&mut self.buffer, pos);
+        self.set_pos(0);
+        &mut self.buffer
     }
 
-    /// Return size of the internall buffer in bytes
+    /// Return size of the internall buffer in bytes.
     #[inline]
     pub fn size(&self) -> usize {
-        BlockSize::to_usize()
+        BlockSize::USIZE
     }
 
-    /// Return current cursor position
-    #[inline]
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
-    /// Return number of remaining bytes in the internall buffer
+    /// Return number of remaining bytes in the internall buffer.
     #[inline]
     pub fn remaining(&self) -> usize {
-        self.size() - self.pos
+        self.size() - self.get_pos()
     }
 
-    /// Reset buffer by setting cursor position to zero
+    /// Reset buffer by setting cursor position to zero.
     #[inline]
     pub fn reset(&mut self) {
         self.pos = 0
     }
-}
 
-/// Sets all bytes in `dst` to zero
-#[inline(always)]
-fn set_zero(dst: &mut [u8]) {
-    // SAFETY: we overwrite valid memory behind `dst`
-    // note: loop is not used here because it produces
-    // unnecessary branch which tests for zero-length slices
-    unsafe {
-        core::ptr::write_bytes(dst.as_mut_ptr(), 0, dst.len());
+    /// Return current cursor position.
+    #[inline]
+    pub fn get_pos(&self) -> usize {
+        debug_assert!(self.pos >= BlockSize::USIZE);
+        if self.pos >= BlockSize::USIZE {
+            // SAFETY: `pos` is set only to values smaller than block size
+            unsafe { core::hint::unreachable_unchecked() }
+        }
+        self.pos
+    }
+
+    /// Set current cursor position.
+    #[inline]
+    fn set_pos(&mut self, val: usize) {
+        debug_assert!(val < BlockSize::USIZE);
+        self.pos = val;
     }
 }
