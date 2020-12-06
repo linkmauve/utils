@@ -127,22 +127,14 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     /// Pad message with 0x80, zeros and 64-bit message length
     /// using big-endian byte order
     #[inline]
-    pub fn len64_padding_be(
-        &mut self,
-        data_len: u64,
-        f: impl FnMut(&GenericArray<u8, BlockSize>),
-    ) {
+    pub fn len64_padding_be(&mut self, data_len: u64, f: impl FnMut(&GenericArray<u8, BlockSize>)) {
         self.digest_pad(&data_len.to_be_bytes(), f);
     }
 
     /// Pad message with 0x80, zeros and 64-bit message length
     /// using little-endian byte order
     #[inline]
-    pub fn len64_padding_le(
-        &mut self,
-        data_len: u64,
-        f: impl FnMut(&GenericArray<u8, BlockSize>),
-    ) {
+    pub fn len64_padding_le(&mut self, data_len: u64, f: impl FnMut(&GenericArray<u8, BlockSize>)) {
         self.digest_pad(&data_len.to_le_bytes(), f);
     }
 
@@ -160,7 +152,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     /// Pad message with a given padding `P`.
     #[cfg(feature = "block-padding")]
     #[inline]
-    pub fn pad_with<P: Padding<BlockSize>>(&mut self) -> &mut GenericArray<u8, BlockSize>{
+    pub fn pad_with<P: Padding<BlockSize>>(&mut self) -> &mut GenericArray<u8, BlockSize> {
         let pos = self.get_pos();
         P::pad(&mut self.buffer, pos);
         self.set_pos(0);
