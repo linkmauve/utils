@@ -15,7 +15,7 @@ use block_padding::Padding;
 use core::{convert::TryInto, slice};
 use generic_array::{ArrayLength, GenericArray};
 
-/// Buffer for block processing of data
+/// Buffer for block processing of data.
 #[derive(Clone, Default)]
 pub struct BlockBuffer<BlockSize: ArrayLength<u8>> {
     buffer: GenericArray<u8, BlockSize>,
@@ -23,12 +23,13 @@ pub struct BlockBuffer<BlockSize: ArrayLength<u8>> {
 }
 
 impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
-    /// Process data in `input` in blocks of size `BlockSize` using function `f`.
+    /// Digest data in `input` in blocks of size `BlockSize` using
+    /// the `compress` function, which accepts a block reference.
     #[inline]
-    pub fn input_block(
+    pub fn digest_block(
         &mut self,
         mut input: &[u8],
-        mut f: impl FnMut(&GenericArray<u8, BlockSize>),
+        mut compress: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
         let pos = self.get_pos();
         let r = self.remaining();
@@ -43,12 +44,12 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             let (l, r) = input.split_at(r);
             input = r;
             self.buffer[pos..].copy_from_slice(l);
-            f(&self.buffer);
+            compress(&self.buffer);
         }
 
         let mut chunks_iter = input.chunks_exact(self.size());
         for chunk in &mut chunks_iter {
-            f(chunk.try_into().unwrap());
+            compress(chunk.try_into().unwrap());
         }
         let rem = chunks_iter.remainder();
 
@@ -57,13 +58,13 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         self.set_pos(rem.len());
     }
 
-    /// Process data in `input` in blocks of size `BlockSize` using function `f`, which accepts
-    /// slice of blocks.
+    /// Digest data in `input` in blocks of size `BlockSize` using
+    /// the `compress` function, which accepts slice of blocks.
     #[inline]
-    pub fn input_blocks(
+    pub fn digest_blocks(
         &mut self,
         mut input: &[u8],
-        mut f: impl FnMut(&[GenericArray<u8, BlockSize>]),
+        mut compress: impl FnMut(&[GenericArray<u8, BlockSize>]),
     ) {
         let pos = self.get_pos();
         let r = self.remaining();
@@ -78,7 +79,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             let (l, r) = input.split_at(r);
             input = r;
             self.buffer[pos..].copy_from_slice(l);
-            f(slice::from_ref(&self.buffer));
+            compress(slice::from_ref(&self.buffer));
         }
 
         // While we have at least a full buffer size chunks's worth of data,
@@ -92,7 +93,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
                 n_blocks,
             )
         };
-        f(blocks);
+        compress(blocks);
 
         // Copy remaining data into the buffer.
         let n = right.len();
