@@ -40,10 +40,10 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             self.set_pos(pos + n);
             return;
         }
-        if pos != 0 && input.len() >= r {
-            let (l, r) = input.split_at(r);
-            input = r;
-            self.buffer[pos..].copy_from_slice(l);
+        if pos != 0 {
+            let (left, right) = input.split_at(r);
+            input = right;
+            self.buffer[pos..].copy_from_slice(left);
             compress(&self.buffer);
         }
 
@@ -75,79 +75,129 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             self.set_pos(pos + n);
             return;
         }
-        if pos != 0 && input.len() >= r {
-            let (l, r) = input.split_at(r);
-            input = r;
-            self.buffer[pos..].copy_from_slice(l);
+        if pos != 0 {
+            let (left, right) = input.split_at(r);
+            input = right;
+            self.buffer[pos..].copy_from_slice(left);
             compress(slice::from_ref(&self.buffer));
         }
 
-        // While we have at least a full buffer size chunks's worth of data,
-        // process its data without copying into the buffer
-        let n_blocks = input.len() / self.size();
-        let (left, right) = input.split_at(n_blocks * self.size());
-        // SAFETY: we guarantee that `blocks` does not point outside of `input`
-        let blocks = unsafe {
-            slice::from_raw_parts(
-                left.as_ptr() as *const GenericArray<u8, BlockSize>,
-                n_blocks,
-            )
-        };
+        let (blocks, leftover) = to_blocks(input);
         compress(blocks);
 
-        // Copy remaining data into the buffer.
-        let n = right.len();
-        self.buffer[..n].copy_from_slice(right);
+        let n = leftover.len();
+        self.buffer[..n].copy_from_slice(leftover);
         self.set_pos(n);
     }
 
-    /// Pad buffer with `prefix` and make sure that internall buffer
-    /// has at least `up_to` free bytes. All remaining bytes get
-    /// zeroed-out.
+    /// XORs `data` using provided functions.
+    ///
+    /// This methof is intended for stream cipher implementations. If `N` is
+    /// equal to 1, the `xor_blocks` function is not used.
+    #[inline]
+    pub fn xor_data<N: ArrayLength<GenericArray<u8, BlockSize>>>(
+        &mut self,
+        mut data: &mut [u8],
+        mut xor_block: impl FnMut(&mut GenericArray<u8, BlockSize>),
+        mut xor_blocks: impl FnMut(&mut GenericArray<GenericArray<u8, BlockSize>, N>),
+    ) {
+        let pos = self.get_pos();
+        let r = self.remaining();
+        let n = data.len();
+        if n < r {
+            // double slicing allows to remove panic branches
+            xor(data, &self.buffer[pos..][..n]);
+            self.set_pos(pos + n);
+            return;
+        }
+        if pos != 0 {
+            let (left, right) = data.split_at_mut(r);
+            data = right;
+            xor(left, &self.buffer[pos..]);
+        }
+
+        let (mut blocks, leftover) = to_blocks_mut(data);
+        if N::USIZE != 1 {
+            let mut par_blocks = blocks.chunks_exact_mut(N::USIZE);
+            for par_block in &mut par_blocks {
+                xor_blocks(par_block.try_into().unwrap());
+            }
+            blocks = par_blocks.into_remainder();
+        }
+
+        for block in blocks {
+            xor_block(block);
+        }
+
+        let n = leftover.len();
+        if n != 0 {
+            let mut buf = Default::default();
+            xor_block(&mut buf);
+            xor(leftover, &buf[..n]);
+            self.buffer = buf;
+        }
+        self.set_pos(n);
+    }
+
+    /// Compress remaining data after padding it with `0x80`, zeros and
+    /// the `suffix` bytes. If there is not enough unused space, `compress`
+    /// will be called twice.
     #[inline(always)]
-    fn digest_pad(&mut self, sfx: &[u8], mut f: impl FnMut(&GenericArray<u8, BlockSize>)) {
+    fn digest_pad(
+        &mut self,
+        suffix: &[u8],
+        mut compress: impl FnMut(&GenericArray<u8, BlockSize>),
+    ) {
         let pos = self.get_pos();
         self.buffer[pos] = 0x80;
         for b in &mut self.buffer[pos + 1..] {
             *b = 0;
         }
 
-        let n = self.size() - sfx.len();
-        if self.size() - pos - 1 < sfx.len() {
-            f(&self.buffer);
+        let n = self.size() - suffix.len();
+        if self.size() - pos - 1 < suffix.len() {
+            compress(&self.buffer);
             let mut block: GenericArray<u8, BlockSize> = Default::default();
-            block[n..].copy_from_slice(sfx);
-            f(&block);
+            block[n..].copy_from_slice(suffix);
+            compress(&block);
         } else {
-            self.buffer[n..].copy_from_slice(sfx);
-            f(&self.buffer);
+            self.buffer[n..].copy_from_slice(suffix);
+            compress(&self.buffer);
         }
         self.set_pos(0)
     }
 
-    /// Pad message with 0x80, zeros and 64-bit message length
-    /// using big-endian byte order
+    /// Pad message with 0x80, zeros and 64-bit message length using
+    /// big-endian byte order.
     #[inline]
-    pub fn len64_padding_be(&mut self, data_len: u64, f: impl FnMut(&GenericArray<u8, BlockSize>)) {
-        self.digest_pad(&data_len.to_be_bytes(), f);
+    pub fn len64_padding_be(
+        &mut self,
+        data_len: u64,
+        compress: impl FnMut(&GenericArray<u8, BlockSize>),
+    ) {
+        self.digest_pad(&data_len.to_be_bytes(), compress);
     }
 
-    /// Pad message with 0x80, zeros and 64-bit message length
-    /// using little-endian byte order
+    /// Pad message with 0x80, zeros and 64-bit message length using
+    /// little-endian byte order.
     #[inline]
-    pub fn len64_padding_le(&mut self, data_len: u64, f: impl FnMut(&GenericArray<u8, BlockSize>)) {
-        self.digest_pad(&data_len.to_le_bytes(), f);
+    pub fn len64_padding_le(
+        &mut self,
+        data_len: u64,
+        compress: impl FnMut(&GenericArray<u8, BlockSize>),
+    ) {
+        self.digest_pad(&data_len.to_le_bytes(), compress);
     }
 
-    /// Pad message with 0x80, zeros and 128-bit message length
-    /// using big-endian byte order
+    /// Pad message with 0x80, zeros and 128-bit message length using
+    /// big-endian byte order.
     #[inline]
     pub fn len128_padding_be(
         &mut self,
         data_len: u128,
-        f: impl FnMut(&GenericArray<u8, BlockSize>),
+        compress: impl FnMut(&GenericArray<u8, BlockSize>),
     ) {
-        self.digest_pad(&data_len.to_be_bytes(), f);
+        self.digest_pad(&data_len.to_be_bytes(), compress);
     }
 
     /// Pad message with a given padding `P`.
@@ -195,4 +245,30 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         debug_assert!(val < BlockSize::USIZE);
         self.pos = val;
     }
+}
+
+#[inline(always)]
+fn xor(a: &mut [u8], b: &[u8]) {
+    debug_assert_eq!(a.len(), b.len());
+    a.iter_mut().zip(b.iter()).for_each(|(a, &b)| *a ^= b);
+}
+
+#[inline(always)]
+fn to_blocks<N: ArrayLength<u8>>(data: &[u8]) -> (&[GenericArray<u8, N>], &[u8]) {
+    let nb = data.len() / N::USIZE;
+    let (left, right) = data.split_at(nb * N::USIZE);
+    let p = left.as_ptr() as *const GenericArray<u8, N>;
+    // SAFETY: we guarantee that `blocks` does not point outside of `data`
+    let blocks = unsafe { slice::from_raw_parts(p, nb) };
+    (blocks, right)
+}
+
+#[inline(always)]
+fn to_blocks_mut<N: ArrayLength<u8>>(data: &mut [u8]) -> (&mut [GenericArray<u8, N>], &mut [u8]) {
+    let nb = data.len() / N::USIZE;
+    let (left, right) = data.split_at_mut(nb * N::USIZE);
+    let p = left.as_mut_ptr() as *mut GenericArray<u8, N>;
+    // SAFETY: we guarantee that `blocks` does not point outside of `data`
+    let blocks = unsafe { slice::from_raw_parts_mut(p, nb) };
+    (blocks, right)
 }
