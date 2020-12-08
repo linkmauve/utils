@@ -37,7 +37,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         if n < r {
             // double slicing allows to remove panic branches
             self.buffer[pos..][..n].copy_from_slice(input);
-            self.set_pos(pos + n);
+            self.set_pos_unchecked(pos + n);
             return;
         }
         if pos != 0 {
@@ -55,7 +55,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
         // Copy any remaining data into the buffer.
         self.buffer[..rem.len()].copy_from_slice(rem);
-        self.set_pos(rem.len());
+        self.set_pos_unchecked(rem.len());
     }
 
     /// Digest data in `input` in blocks of size `BlockSize` using
@@ -72,7 +72,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         if n < r {
             // double slicing allows to remove panic branches
             self.buffer[pos..][..n].copy_from_slice(input);
-            self.set_pos(pos + n);
+            self.set_pos_unchecked(pos + n);
             return;
         }
         if pos != 0 {
@@ -87,56 +87,56 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
         let n = leftover.len();
         self.buffer[..n].copy_from_slice(leftover);
-        self.set_pos(n);
+        self.set_pos_unchecked(n);
     }
 
-    /// XORs `data` using provided functions.
+    /// XORs `data` using the provided state and block generation functions.
     ///
     /// This method is intended for stream cipher implementations. If `N` is
-    /// equal to 1, the `xor_blocks` function is not used.
+    /// equal to 1, the `gen_blocks` function is not used.
     #[inline]
-    pub fn xor_data<N: ArrayLength<GenericArray<u8, BlockSize>>>(
+    pub fn xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
         &mut self,
         mut data: &mut [u8],
-        mut xor_block: impl FnMut(&mut GenericArray<u8, BlockSize>),
-        mut xor_blocks: impl FnMut(&mut GenericArray<GenericArray<u8, BlockSize>, N>),
+        state: &mut S,
+        mut gen_block: impl FnMut(&mut S) -> GenericArray<u8, BlockSize>,
+        mut gen_blocks: impl FnMut(&mut S) -> GenericArray<GenericArray<u8, BlockSize>, N>,
     ) {
         let pos = self.get_pos();
         let r = self.remaining();
         let n = data.len();
-        if n < r {
-            // double slicing allows to remove panic branches
-            xor(data, &self.buffer[pos..][..n]);
-            self.set_pos(pos + n);
-            return;
-        }
         if pos != 0 {
+            if n < r {
+                // double slicing allows to remove panic branches
+                xor(data, &self.buffer[pos..][..n]);
+                self.set_pos_unchecked(pos + n);
+                return;
+            }
             let (left, right) = data.split_at_mut(r);
             data = right;
             xor(left, &self.buffer[pos..]);
         }
 
-        let (mut blocks, leftover) = to_blocks_mut(data);
-        if N::USIZE != 1 {
-            let mut par_blocks = blocks.chunks_exact_mut(N::USIZE);
-            for par_block in &mut par_blocks {
-                xor_blocks(par_block.try_into().unwrap());
-            }
-            blocks = par_blocks.into_remainder();
-        }
+        let (par_blocks, blocks, leftover) = to_blocks_mut::<BlockSize, N>(data);
+        par_blocks
+            .iter_mut()
+            .for_each(|pb| pb
+                .iter_mut()
+                .zip(gen_blocks(state).iter())
+                .for_each(|(a, b)| xor(a, b))
+            );
 
         for block in blocks {
-            xor_block(block);
+            xor(block, &gen_block(state));
         }
 
         let n = leftover.len();
         if n != 0 {
-            let mut buf = Default::default();
-            xor_block(&mut buf);
-            xor(leftover, &buf[..n]);
-            self.buffer = buf;
+            let block = gen_block(state);
+            xor(leftover, &block[..n]);
+            self.buffer = block;
         }
-        self.set_pos(n);
+        self.set_pos_unchecked(n);
     }
 
     /// Compress remaining data after padding it with `0x80`, zeros and
@@ -164,7 +164,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             self.buffer[n..].copy_from_slice(suffix);
             compress(&self.buffer);
         }
-        self.set_pos(0)
+        self.set_pos_unchecked(0)
     }
 
     /// Pad message with 0x80, zeros and 64-bit message length using
@@ -206,7 +206,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     pub fn pad_with<P: Padding<BlockSize>>(&mut self) -> &mut GenericArray<u8, BlockSize> {
         let pos = self.get_pos();
         P::pad(&mut self.buffer, pos);
-        self.set_pos(0);
+        self.set_pos_unchecked(0);
         &mut self.buffer
     }
 
@@ -231,7 +231,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     /// Return current cursor position.
     #[inline]
     pub fn get_pos(&self) -> usize {
-        debug_assert!(self.pos >= BlockSize::USIZE);
+        debug_assert!(self.pos < BlockSize::USIZE);
         if self.pos >= BlockSize::USIZE {
             // SAFETY: `pos` is set only to values smaller than block size
             unsafe { core::hint::unreachable_unchecked() }
@@ -240,10 +240,25 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     }
 
     /// Set current cursor position.
+    ///
+    /// # Panics
+    /// If `pos` is bigger or equal to block size.
     #[inline]
-    fn set_pos(&mut self, val: usize) {
-        debug_assert!(val < BlockSize::USIZE);
-        self.pos = val;
+    pub fn set_pos(&mut self, pos: usize) {
+        assert!(pos < BlockSize::USIZE);
+        self.pos = pos;
+    }
+
+    /// Set buffer content.
+    pub fn set_buffer(&mut self, buf: GenericArray<u8, BlockSize>) {
+        self.buffer = buf;
+    }
+
+    // TODO: check if we can use `set_pos` without adding panic branches
+    #[inline]
+    fn set_pos_unchecked(&mut self, pos: usize) {
+        debug_assert!(pos < BlockSize::USIZE);
+        self.pos = pos;
     }
 }
 
@@ -264,11 +279,31 @@ fn to_blocks<N: ArrayLength<u8>>(data: &[u8]) -> (&[GenericArray<u8, N>], &[u8])
 }
 
 #[inline(always)]
-fn to_blocks_mut<N: ArrayLength<u8>>(data: &mut [u8]) -> (&mut [GenericArray<u8, N>], &mut [u8]) {
-    let nb = data.len() / N::USIZE;
-    let (left, right) = data.split_at_mut(nb * N::USIZE);
-    let p = left.as_mut_ptr() as *mut GenericArray<u8, N>;
-    // SAFETY: we guarantee that `blocks` does not point outside of `data`
-    let blocks = unsafe { slice::from_raw_parts_mut(p, nb) };
-    (blocks, right)
+fn to_blocks_mut<N, M>(data: &mut [u8]) -> (
+    &mut [GenericArray<GenericArray<u8, N>, M>],
+    &mut [GenericArray<u8, N>],
+    &mut [u8],
+)
+    where N: ArrayLength<u8>, M: ArrayLength<GenericArray<u8, N>>,
+{
+    let b_size = N::USIZE;
+    let pb_size = N::USIZE * M::USIZE;
+    let npb = match M::USIZE {
+        1 => 0,
+        _ => data.len() / pb_size,
+    };
+    let (pb_slice, data) = data.split_at_mut(npb * pb_size);
+    let nb = data.len() / b_size;
+    let (b_slice, data) = data.split_at_mut(nb * b_size);
+    let pb_ptr = pb_slice.as_mut_ptr() as *mut GenericArray<GenericArray<u8, N>, M>;
+    let b_ptr = b_slice.as_mut_ptr() as *mut GenericArray<u8, N>;
+    // SAFETY: we guarantee that the resulting values do not overlap and do not
+    // point outside of the input slice
+    unsafe {
+        (
+            slice::from_raw_parts_mut(pb_ptr, npb),
+            slice::from_raw_parts_mut(b_ptr, nb),
+            data,
+        )
+    }
 }
