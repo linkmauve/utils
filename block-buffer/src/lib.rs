@@ -118,13 +118,12 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         }
 
         let (par_blocks, blocks, leftover) = to_blocks_mut::<BlockSize, N>(data);
-        par_blocks
-            .iter_mut()
-            .for_each(|pb| pb
-                .iter_mut()
-                .zip(gen_blocks(state).iter())
-                .for_each(|(a, b)| xor(a, b))
-            );
+        for pb in par_blocks {
+            let blocks = gen_blocks(state);
+            for i in 0..N::USIZE {
+                xor(&mut pb[i], &blocks[i]);
+            }
+        }
 
         for block in blocks {
             xor(block, &gen_block(state));
@@ -278,6 +277,7 @@ fn to_blocks<N: ArrayLength<u8>>(data: &[u8]) -> (&[GenericArray<u8, N>], &[u8])
     (blocks, right)
 }
 
+#[allow(clippy::type_complexity)]
 #[inline(always)]
 fn to_blocks_mut<N, M>(data: &mut [u8]) -> (
     &mut [GenericArray<GenericArray<u8, N>, M>],
