@@ -92,7 +92,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
     /// XORs `data` using provided functions.
     ///
-    /// This methof is intended for stream cipher implementations. If `N` is
+    /// This method is intended for stream cipher implementations. If `N` is
     /// equal to 1, the `xor_blocks` function is not used.
     #[inline]
     pub fn xor_data<N: ArrayLength<GenericArray<u8, BlockSize>>>(
