@@ -279,12 +279,16 @@ fn to_blocks<N: ArrayLength<u8>>(data: &[u8]) -> (&[GenericArray<u8, N>], &[u8])
 
 #[allow(clippy::type_complexity)]
 #[inline(always)]
-fn to_blocks_mut<N, M>(data: &mut [u8]) -> (
+fn to_blocks_mut<N, M>(
+    data: &mut [u8],
+) -> (
     &mut [GenericArray<GenericArray<u8, N>, M>],
     &mut [GenericArray<u8, N>],
     &mut [u8],
 )
-    where N: ArrayLength<u8>, M: ArrayLength<GenericArray<u8, N>>,
+where
+    N: ArrayLength<u8>,
+    M: ArrayLength<GenericArray<u8, N>>,
 {
     let b_size = N::USIZE;
     let pb_size = N::USIZE * M::USIZE;
