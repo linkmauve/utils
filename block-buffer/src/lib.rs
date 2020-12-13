@@ -90,15 +90,14 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         self.set_pos_unchecked(n);
     }
 
-    /// XORs `data` using the provided state and block generation functions.
+    /// Core method for `xor_data` and `set_data` methods.
     ///
-    /// This method is intended for stream cipher implementations. If `N` is
-    /// equal to 1, the `gen_blocks` function is not used.
-    #[inline]
-    pub fn par_xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
+    /// If `N` is equal to 1, the `gen_blocks` function is not used.
+    fn process_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
         &mut self,
         mut data: &mut [u8],
         state: &mut S,
+        mut process: impl FnMut(&mut [u8], &[u8]),
         mut gen_block: impl FnMut(&mut S) -> GenericArray<u8, BlockSize>,
         mut gen_blocks: impl FnMut(&mut S) -> GenericArray<GenericArray<u8, BlockSize>, N>,
     ) {
@@ -108,34 +107,49 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         if pos != 0 {
             if n < r {
                 // double slicing allows to remove panic branches
-                xor(data, &self.buffer[pos..][..n]);
+                process(data, &self.buffer[pos..][..n]);
                 self.set_pos_unchecked(pos + n);
                 return;
             }
             let (left, right) = data.split_at_mut(r);
             data = right;
-            xor(left, &self.buffer[pos..]);
+            process(left, &self.buffer[pos..]);
         }
 
         let (par_blocks, blocks, leftover) = to_blocks_mut::<BlockSize, N>(data);
         for pb in par_blocks {
             let blocks = gen_blocks(state);
             for i in 0..N::USIZE {
-                xor(&mut pb[i], &blocks[i]);
+                process(&mut pb[i], &blocks[i]);
             }
         }
 
         for block in blocks {
-            xor(block, &gen_block(state));
+            process(block, &gen_block(state));
         }
 
         let n = leftover.len();
         if n != 0 {
             let block = gen_block(state);
-            xor(leftover, &block[..n]);
+            process(leftover, &block[..n]);
             self.buffer = block;
         }
         self.set_pos_unchecked(n);
+    }
+
+    /// XORs `data` using the provided state and block generation functions.
+    ///
+    /// This method is intended for stream cipher implementations. If `N` is
+    /// equal to 1, the `gen_blocks` function is not used.
+    #[inline]
+    pub fn par_xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
+        &mut self,
+        data: &mut [u8],
+        state: &mut S,
+        gen_block: impl FnMut(&mut S) -> GenericArray<u8, BlockSize>,
+        gen_blocks: impl FnMut(&mut S) -> GenericArray<GenericArray<u8, BlockSize>, N>,
+    ) {
+        self.process_data(data, state, xor, gen_block, gen_blocks);
     }
 
     /// Simplified version of the [`par_xor_data`] method, with `N = 1`.
@@ -143,15 +157,33 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     pub fn xor_data<S>(
         &mut self,
         data: &mut [u8],
-        state: &mut S,
-        gen_block: impl FnMut(&mut S) -> GenericArray<u8, BlockSize>,
+        mut gen_block: impl FnMut() -> GenericArray<u8, BlockSize>,
     ) {
         // note: the unrachable panic should be removed by compiler since
         // with `N = 1` the second closure is not used
-        self.par_xor_data(
+        self.process_data(
             data,
-            state,
-            gen_block,
+            &mut gen_block,
+            xor,
+            |f| f(),
+            |_| -> GenericArray<GenericArray<u8, BlockSize>, U1> { unreachable!() },
+        );
+    }
+
+    /// Set `data` to generated blocks.
+    #[inline]
+    pub fn set_data<S>(
+        &mut self,
+        data: &mut [u8],
+        mut gen_block: impl FnMut() -> GenericArray<u8, BlockSize>,
+    ) {
+        // note: the unrachable panic should be removed by compiler since
+        // with `N = 1` the second closure is not used
+        self.process_data(
+            data,
+            &mut gen_block,
+            set,
+            |f| f(),
             |_| -> GenericArray<GenericArray<u8, BlockSize>, U1> { unreachable!() },
         );
     }
@@ -283,6 +315,11 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 fn xor(a: &mut [u8], b: &[u8]) {
     debug_assert_eq!(a.len(), b.len());
     a.iter_mut().zip(b.iter()).for_each(|(a, &b)| *a ^= b);
+}
+
+#[inline(always)]
+fn set(a: &mut [u8], b: &[u8]) {
+    a.copy_from_slice(b);
 }
 
 #[inline(always)]
