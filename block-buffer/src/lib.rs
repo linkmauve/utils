@@ -288,22 +288,16 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
         self.pos
     }
 
-    /// Set current cursor position.
+    /// Set buffer content and cursor position.
     ///
     /// # Panics
     /// If `pos` is bigger or equal to block size.
-    #[inline]
-    pub fn set_pos(&mut self, pos: usize) {
+    pub fn set(&mut self, buf: GenericArray<u8, BlockSize>, pos: usize) {
         assert!(pos < BlockSize::USIZE);
+        self.buffer = buf;
         self.pos = pos;
     }
 
-    /// Set buffer content.
-    pub fn set_buffer(&mut self, buf: GenericArray<u8, BlockSize>) {
-        self.buffer = buf;
-    }
-
-    // TODO: check if we can use `set_pos` without adding panic branches
     #[inline]
     fn set_pos_unchecked(&mut self, pos: usize) {
         debug_assert!(pos < BlockSize::USIZE);
