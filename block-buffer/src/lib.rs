@@ -154,7 +154,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
     /// Simplified version of the [`par_xor_data`] method, with `N = 1`.
     #[inline]
-    pub fn xor_data<S>(
+    pub fn xor_data(
         &mut self,
         data: &mut [u8],
         mut gen_block: impl FnMut() -> GenericArray<u8, BlockSize>,
@@ -172,7 +172,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
     /// Set `data` to generated blocks.
     #[inline]
-    pub fn set_data<S>(
+    pub fn set_data(
         &mut self,
         data: &mut [u8],
         mut gen_block: impl FnMut() -> GenericArray<u8, BlockSize>,
