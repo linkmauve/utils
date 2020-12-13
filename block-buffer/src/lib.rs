@@ -13,7 +13,7 @@ pub use generic_array;
 #[cfg(feature = "block-padding")]
 use block_padding::Padding;
 use core::{convert::TryInto, slice};
-use generic_array::{ArrayLength, GenericArray};
+use generic_array::{typenum::U1, ArrayLength, GenericArray};
 
 /// Buffer for block processing of data.
 #[derive(Clone, Default)]
@@ -95,7 +95,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
     /// This method is intended for stream cipher implementations. If `N` is
     /// equal to 1, the `gen_blocks` function is not used.
     #[inline]
-    pub fn xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
+    pub fn par_xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
         &mut self,
         mut data: &mut [u8],
         state: &mut S,
@@ -136,6 +136,24 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
             self.buffer = block;
         }
         self.set_pos_unchecked(n);
+    }
+
+    /// Simplified version of the [`par_xor_data`] method, with `N = 1`.
+    #[inline]
+    pub fn xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
+        &mut self,
+        data: &mut [u8],
+        state: &mut S,
+        gen_block: impl FnMut(&mut S) -> GenericArray<u8, BlockSize>,
+    ) {
+        // note: the unrachable panic should be removed by compiler since
+        // with `N = 1` the second closure is not used
+        self.par_xor_data(
+            data,
+            state,
+            gen_block,
+            |_| -> GenericArray<GenericArray<u8, BlockSize>, U1> { unreachable!() },
+        );
     }
 
     /// Compress remaining data after padding it with `0x80`, zeros and
