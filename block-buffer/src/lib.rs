@@ -140,7 +140,7 @@ impl<BlockSize: ArrayLength<u8>> BlockBuffer<BlockSize> {
 
     /// Simplified version of the [`par_xor_data`] method, with `N = 1`.
     #[inline]
-    pub fn xor_data<S, N: ArrayLength<GenericArray<u8, BlockSize>>>(
+    pub fn xor_data<S>(
         &mut self,
         data: &mut [u8],
         state: &mut S,
